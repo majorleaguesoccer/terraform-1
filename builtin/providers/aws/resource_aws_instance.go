@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -190,6 +189,50 @@ func resourceAwsInstance() *schema.Resource {
 				},
 				Set: resourceAwsInstanceBlockDevicesHash,
 			},
+
+			"root_block_device": &schema.Schema{
+				// TODO: This is a list because we don't support singleton
+				//       sub-resources today. We'll enforce that the list only ever has
+				//       length zero or one below. When TF gains support for
+				//       sub-resources this can be converted.
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
+				Elem: &schema.Resource{
+					// "You can only modify the volume size, volume type, and Delete on
+					// Termination flag on the block device mapping entry for the root
+					// device volume." - bit.ly/ec2bdmap
+					Schema: map[string]*schema.Schema{
+						"delete_on_termination": &schema.Schema{
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  true,
+							ForceNew: true,
+						},
+
+						"device_name": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+							ForceNew: true,
+							Default:  "/dev/sda1",
+						},
+
+						"volume_size": &schema.Schema{
+							Type:     schema.TypeInt,
+							Optional: true,
+							Computed: true,
+							ForceNew: true,
+						},
+
+						"volume_type": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+							Computed: true,
+							ForceNew: true,
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -238,19 +281,36 @@ func resourceAwsInstanceCreate(d *schema.ResourceData, meta interface{}) error {
 		}
 	}
 
+	blockDevices := make([]interface{}, 0)
+
 	if v := d.Get("block_device"); v != nil {
-		vs := v.(*schema.Set).List()
-		if len(vs) > 0 {
-			runOpts.BlockDevices = make([]ec2.BlockDeviceMapping, len(vs))
-			for i, v := range vs {
-				bd := v.(map[string]interface{})
-				runOpts.BlockDevices[i].DeviceName = bd["device_name"].(string)
-				runOpts.BlockDevices[i].VirtualName = bd["virtual_name"].(string)
-				runOpts.BlockDevices[i].SnapshotId = bd["snapshot_id"].(string)
-				runOpts.BlockDevices[i].VolumeType = bd["volume_type"].(string)
-				runOpts.BlockDevices[i].VolumeSize = int64(bd["volume_size"].(int))
-				runOpts.BlockDevices[i].DeleteOnTermination = bd["delete_on_termination"].(bool)
-				runOpts.BlockDevices[i].Encrypted = bd["encrypted"].(bool)
+		blockDevices = append(blockDevices, v.(*schema.Set).List()...)
+	}
+
+	if v := d.Get("root_block_device"); v != nil {
+		rootBlockDevices := v.([]interface{})
+		if len(rootBlockDevices) > 1 {
+			return fmt.Errorf("Cannot specify more than one root_block_device.")
+		}
+		blockDevices = append(blockDevices, rootBlockDevices...)
+	}
+
+	if len(blockDevices) > 0 {
+		runOpts.BlockDevices = make([]ec2.BlockDeviceMapping, len(blockDevices))
+		for i, v := range blockDevices {
+			bd := v.(map[string]interface{})
+			runOpts.BlockDevices[i].DeviceName = bd["device_name"].(string)
+			runOpts.BlockDevices[i].VolumeType = bd["volume_type"].(string)
+			runOpts.BlockDevices[i].VolumeSize = int64(bd["volume_size"].(int))
+			runOpts.BlockDevices[i].DeleteOnTermination = bd["delete_on_termination"].(bool)
+			if v, ok := bd["virtual_name"].(string); ok {
+				runOpts.BlockDevices[i].VirtualName = v
+			}
+			if v, ok := bd["snapshot_id"].(string); ok {
+				runOpts.BlockDevices[i].SnapshotId = v
+			}
+			if v, ok := bd["encrypted"].(bool); ok {
+				runOpts.BlockDevices[i].Encrypted = v
 			}
 		}
 	}
@@ -377,11 +437,14 @@ func resourceAwsInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	}
 	d.Set("security_groups", sgs)
 
-	volIDs := make([]string, len(instance.BlockDevices))
-	bdByVolID := make(map[string]ec2.BlockDevice)
-	for i, bd := range instance.BlockDevices {
-		volIDs[i] = bd.VolumeId
-		bdByVolID[bd.VolumeId] = bd
+	blockDevices := make(map[string]ec2.BlockDevice)
+	for _, bd := range instance.BlockDevices {
+		blockDevices[bd.VolumeId] = bd
+	}
+
+	volIDs := make([]string, 0, len(blockDevices))
+	for volID := range blockDevices {
+		volIDs = append(volIDs, volID)
 	}
 
 	volResp, err := ec2conn.Volumes(volIDs, ec2.NewFilter())
@@ -389,21 +452,32 @@ func resourceAwsInstanceRead(d *schema.ResourceData, meta interface{}) error {
 		return err
 	}
 
-	bds := make([]map[string]interface{}, len(volResp.Volumes))
-	for i, vol := range volResp.Volumes {
-		volSize, err := strconv.Atoi(vol.Size)
-		if err != nil {
-			return err
+	nonRootBlockDevices := make([]map[string]interface{}, 0)
+	rootBlockDevice := make([]interface{}, 0, 1)
+	for _, vol := range volResp.Volumes {
+		blockDevice := make(map[string]interface{})
+		blockDevice["device_name"] = *blockDevices[*vol.VolumeID].DeviceName
+		blockDevice["volume_type"] = *vol.VolumeType
+		blockDevice["volume_size"] = *vol.Size
+		if vol.IOPS != nil {
+			blockDevice["iops"] = *vol.IOPS
 		}
-		bds[i] = make(map[string]interface{})
-		bds[i]["device_name"] = bdByVolID[vol.VolumeId].DeviceName
-		bds[i]["snapshot_id"] = vol.SnapshotId
-		bds[i]["volume_type"] = vol.VolumeType
-		bds[i]["volume_size"] = volSize
-		bds[i]["delete_on_termination"] = bdByVolID[vol.VolumeId].DeleteOnTermination
-		bds[i]["encrypted"] = vol.Encrypted
+		blockDevice["delete_on_termination"] =
+			*blockDevices[*vol.VolumeID].EBS.DeleteOnTermination
+
+		// If this is the root device, save it. We stop here since we
+		// can't put invalid keys into this map.
+		if blockDevice["device_name"] == *instance.RootDeviceName {
+			rootBlockDevice = []interface{}{blockDevice}
+			continue
+		}
+
+		blockDevice["snapshot_id"] = *vol.SnapshotID
+		blockDevice["encrypted"] = *vol.Encrypted
+		nonRootBlockDevices = append(nonRootBlockDevices, blockDevice)
 	}
-	d.Set("block_device", bds)
+	d.Set("block_device", nonRootBlockDevices)
+	d.Set("root_block_device", rootBlockDevice)
 
 	return nil
 }
@@ -421,7 +495,7 @@ func resourceAwsInstanceUpdate(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	if modify {
-		log.Printf("[INFO] Modifing instance %s: %#v", d.Id(), opts)
+		log.Printf("[INFO] Modifying instance %s: %#v", d.Id(), opts)
 		if _, err := ec2conn.ModifyInstance(d.Id(), opts); err != nil {
 			return err
 		}

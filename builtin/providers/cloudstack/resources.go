@@ -40,8 +40,8 @@ func retrieveUUID(cs *cloudstack.CloudStackClient, name, value string) (uuid str
 		uuid, err = cs.VPC.GetVPCOfferingID(value)
 	case "vpc":
 		uuid, err = cs.VPC.GetVPCID(value)
-	case "template":
-		uuid, err = cs.Template.GetTemplateID(value, "executable")
+	// case "template":
+	// 	uuid, err = cs.Template.GetTemplateID(value, "executable")
 	case "network":
 		uuid, err = cs.Network.GetNetworkID(value)
 	case "zone":
