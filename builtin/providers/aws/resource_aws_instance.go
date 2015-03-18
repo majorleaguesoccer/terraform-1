@@ -190,49 +190,49 @@ func resourceAwsInstance() *schema.Resource {
 				Set: resourceAwsInstanceBlockDevicesHash,
 			},
 
-			// "root_block_device": &schema.Schema{
-			// 	// TODO: This is a list because we don't support singleton
-			// 	//       sub-resources today. We'll enforce that the list only ever has
-			// 	//       length zero or one below. When TF gains support for
-			// 	//       sub-resources this can be converted.
-			// 	Type:     schema.TypeList,
-			// 	Optional: true,
-			// 	Computed: true,
-			// 	Elem: &schema.Resource{
-			// 		// "You can only modify the volume size, volume type, and Delete on
-			// 		// Termination flag on the block device mapping entry for the root
-			// 		// device volume." - bit.ly/ec2bdmap
-			// 		Schema: map[string]*schema.Schema{
-			// 			"delete_on_termination": &schema.Schema{
-			// 				Type:     schema.TypeBool,
-			// 				Optional: true,
-			// 				Default:  true,
-			// 				ForceNew: true,
-			// 			},
+			"root_block_device": &schema.Schema{
+				// TODO: This is a list because we don't support singleton
+				//       sub-resources today. We'll enforce that the list only ever has
+				//       length zero or one below. When TF gains support for
+				//       sub-resources this can be converted.
+				Type:     schema.TypeList,
+				Optional: true,
+				Computed: true,
+				Elem: &schema.Resource{
+					// "You can only modify the volume size, volume type, and Delete on
+					// Termination flag on the block device mapping entry for the root
+					// device volume." - bit.ly/ec2bdmap
+					Schema: map[string]*schema.Schema{
+						"delete_on_termination": &schema.Schema{
+							Type:     schema.TypeBool,
+							Optional: true,
+							Default:  true,
+							ForceNew: true,
+						},
 
-			// 			"device_name": &schema.Schema{
-			// 				Type:     schema.TypeString,
-			// 				Optional: true,
-			// 				ForceNew: true,
-			// 				Default:  "/dev/sda1",
-			// 			},
+						"device_name": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+							ForceNew: true,
+							Default:  "/dev/sda1",
+						},
 
-			// 			"volume_size": &schema.Schema{
-			// 				Type:     schema.TypeInt,
-			// 				Optional: true,
-			// 				Computed: true,
-			// 				ForceNew: true,
-			// 			},
+						"volume_size": &schema.Schema{
+							Type:     schema.TypeInt,
+							Optional: true,
+							Computed: true,
+							ForceNew: true,
+						},
 
-			// 			"volume_type": &schema.Schema{
-			// 				Type:     schema.TypeString,
-			// 				Optional: true,
-			// 				Computed: true,
-			// 				ForceNew: true,
-			// 			},
-			// 		},
-			// 	},
-			// },
+						"volume_type": &schema.Schema{
+							Type:     schema.TypeString,
+							Optional: true,
+							Computed: true,
+							ForceNew: true,
+						},
+					},
+				},
+			},
 		},
 	}
 }
@@ -453,7 +453,7 @@ func resourceAwsInstanceRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	nonRootBlockDevices := make([]map[string]interface{}, 0)
-	//rootBlockDevice := make([]interface{}, 0, 1)
+	rootBlockDevice := make([]interface{}, 0, 1)
 	for _, vol := range volResp.Volumes {
 		blockDevice := make(map[string]interface{})
 		blockDevice["device_name"] = blockDevices[vol.VolumeId].DeviceName
@@ -466,7 +466,7 @@ func resourceAwsInstanceRead(d *schema.ResourceData, meta interface{}) error {
 		// If this is the root device, save it. We stop here since we
 		// can't put invalid keys into this map.
 		if blockDevice["device_name"] == instance.RootDeviceName {
-			//rootBlockDevice = []interface{}{blockDevice}
+			rootBlockDevice = []interface{}{blockDevice}
 			continue
 		}
 
@@ -475,7 +475,7 @@ func resourceAwsInstanceRead(d *schema.ResourceData, meta interface{}) error {
 		nonRootBlockDevices = append(nonRootBlockDevices, blockDevice)
 	}
 	d.Set("block_device", nonRootBlockDevices)
-	//d.Set("root_block_device", rootBlockDevice)
+	d.Set("root_block_device", rootBlockDevice)
 
 	return nil
 }
